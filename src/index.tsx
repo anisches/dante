@@ -9,57 +9,68 @@ import { AnthropicProvider } from './providers/anthropic.js';
 import { OllamaProvider } from './providers/ollama.js';
 import { runSetup } from './setup.js';
 
+const COMMANDS = [
+  { name: '/models',   desc: 'switch model' },
+  { name: '/provider', desc: 'switch provider' },
+  { name: '/clear',    desc: 'clear chat' },
+  { name: '/help',     desc: 'show commands' },
+  { name: '/exit',     desc: 'quit' },
+];
+
+function makeProvider(config: any): LLMProvider {
+  if (config.defaultProvider === 'anthropic') {
+    return new AnthropicProvider(config.anthropicKey, config.defaultModel);
+  }
+  if (config.defaultProvider === 'gemini') {
+    return new GeminiProvider(config.geminiKey, config.defaultModel);
+  }
+  return new OllamaProvider(config.defaultModel || 'llama3');
+}
+
 const App = ({ initialConfig }: { initialConfig: any }) => {
   const { exit } = useApp();
   const [messages, setMessages] = useState<LLMMessage[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
-  const [currentProvider, setCurrentProvider] = useState<LLMProvider | null>(null);
-  
-  const [showModelSelector, setShowModelSelector] = useState(false);
-  const [showProviderSelector, setShowProviderSelector] = useState(false);
+  const [currentProvider, setCurrentProvider] = useState<LLMProvider>(() => makeProvider(initialConfig));
+  const [providerName, setProviderName] = useState<string>(initialConfig.defaultProvider || '');
+  const [modelName, setModelName] = useState<string>(initialConfig.defaultModel || '');
+
+  const [mode, setMode] = useState<'chat' | 'models' | 'providers'>('chat');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [availableProviders] = useState(['ollama', 'gemini', 'anthropic']);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-
-  const COMMANDS = ['/models', '/provider', '/exit', '/quit'];
+  const [suggestions, setSuggestions] = useState<typeof COMMANDS>([]);
 
   useEffect(() => {
     if (input.startsWith('/')) {
-      const filtered = COMMANDS.filter(cmd => cmd.startsWith(input) && cmd !== input);
-      setSuggestions(filtered);
+      setSuggestions(COMMANDS.filter(c => c.name.startsWith(input) && c.name !== input));
       setSelectedIndex(0);
     } else {
       setSuggestions([]);
     }
   }, [input]);
 
-  useEffect(() => {
-    let provider: LLMProvider;
-    if (initialConfig.defaultProvider === 'anthropic') {
-      provider = new AnthropicProvider(initialConfig.anthropicKey, initialConfig.defaultModel);
-    } else if (initialConfig.defaultProvider === 'gemini') {
-      provider = new GeminiProvider(initialConfig.geminiKey, initialConfig.defaultModel);
-    } else {
-      provider = new OllamaProvider(initialConfig.defaultModel || 'llama3');
-    }
-    setCurrentProvider(provider);
-  }, [initialConfig]);
-
-  const handleCommand = async (cmd: string) => {
+  const handleCommand = async (cmd: string): Promise<boolean> => {
     if (cmd === '/models') {
-      if (currentProvider) {
-        const models = await currentProvider.listModels();
-        setAvailableModels(models);
-        setShowModelSelector(true);
-        setSelectedIndex(0);
-      }
+      const models = await currentProvider.listModels();
+      setAvailableModels(models);
+      setMode('models');
+      setSelectedIndex(0);
       return true;
     }
     if (cmd === '/provider') {
-      setShowProviderSelector(true);
+      setMode('providers');
       setSelectedIndex(0);
+      return true;
+    }
+    if (cmd === '/clear') {
+      setMessages([]);
+      return true;
+    }
+    if (cmd === '/help') {
+      const help = COMMANDS.map(c => `  ${c.name.padEnd(12)}${c.desc}`).join('\n');
+      setMessages(prev => [...prev, { role: 'assistant', content: help }]);
       return true;
     }
     if (cmd === '/exit' || cmd === '/quit') {
@@ -70,134 +81,123 @@ const App = ({ initialConfig }: { initialConfig: any }) => {
   };
 
   const handleSubmit = async (value: string) => {
+    const trimmed = value.trim();
     setInput('');
-    if (await handleCommand(value)) return;
+    if (!trimmed) return;
+    if (await handleCommand(trimmed)) return;
 
-    const userMessage: LLMMessage = { role: 'user', content: value };
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
+    const userMessage: LLMMessage = { role: 'user', content: trimmed };
+    const history = [...messages, userMessage];
+    setMessages(history);
+    setIsStreaming(true);
 
-    if (currentProvider) {
-      setIsStreaming(true);
-      let assistantContent = '';
-      const assistantMessage: LLMMessage = { role: 'assistant', content: '' };
-      setMessages([...newMessages, assistantMessage]);
+    let content = '';
+    setMessages([...history, { role: 'assistant', content: '' }]);
 
-      try {
-        for await (const chunk of currentProvider.streamResponse(newMessages)) {
-          assistantContent += chunk;
-          setMessages([...newMessages, { role: 'assistant', content: assistantContent }]);
-        }
-      } catch (error: any) {
-        setMessages([...newMessages, { role: 'assistant', content: `Error: ${error.message}` }]);
-      } finally {
-        setIsStreaming(false);
+    try {
+      for await (const chunk of currentProvider.streamResponse(history)) {
+        content += chunk;
+        setMessages([...history, { role: 'assistant', content }]);
       }
+    } catch (err: any) {
+      setMessages([...history, { role: 'assistant', content: `error: ${err.message}` }]);
+    } finally {
+      setIsStreaming(false);
     }
   };
 
-  useInput((input, key) => {
-    if (suggestions.length > 0) {
-      if (key.tab) {
-        setInput(suggestions[selectedIndex]);
-        return;
-      }
-      if (key.downArrow) {
-        setSelectedIndex(prev => Math.min(suggestions.length - 1, prev + 1));
-        return;
-      }
-      if (key.upArrow) {
-        setSelectedIndex(prev => Math.max(0, prev - 1));
-        return;
-      }
+  useInput((_ch, key) => {
+    if (suggestions.length > 0 && mode === 'chat') {
+      if (key.tab) { setInput(suggestions[selectedIndex].name); return; }
+      if (key.downArrow) { setSelectedIndex(i => Math.min(suggestions.length - 1, i + 1)); return; }
+      if (key.upArrow)   { setSelectedIndex(i => Math.max(0, i - 1)); return; }
     }
 
-    if (showModelSelector || showProviderSelector) {
-      const list = showModelSelector ? availableModels : availableProviders;
-      if (key.upArrow) {
-        setSelectedIndex(Math.max(0, selectedIndex - 1));
-      }
-      if (key.downArrow) {
-        setSelectedIndex(Math.min(list.length - 1, selectedIndex + 1));
-      }
+    if (mode === 'models' || mode === 'providers') {
+      const list = mode === 'models' ? availableModels : availableProviders;
+      if (key.upArrow)   { setSelectedIndex(i => Math.max(0, i - 1)); return; }
+      if (key.downArrow) { setSelectedIndex(i => Math.min(list.length - 1, i + 1)); return; }
+      if (key.escape)    { setMode('chat'); return; }
       if (key.return) {
         const selected = list[selectedIndex];
-        if (showModelSelector) {
+        if (mode === 'models') {
           (currentProvider as any).setModel?.(selected);
-          saveConfig({ defaultModel: selected as string });
-          setShowModelSelector(false);
+          saveConfig({ defaultModel: selected });
+          setModelName(selected);
         } else {
-          const config = getConfig();
-          let provider: LLMProvider;
-          if (selected === 'anthropic' && config.anthropicKey) provider = new AnthropicProvider(config.anthropicKey);
-          else if (selected === 'gemini' && config.geminiKey) provider = new GeminiProvider(config.geminiKey);
-          else provider = new OllamaProvider();
-          
-          if (provider!) {
-            setCurrentProvider(provider);
-            saveConfig({ defaultProvider: selected as any });
-          }
-          setShowProviderSelector(false);
+          const cfg = getConfig();
+          const p = makeProvider({ ...cfg, defaultProvider: selected });
+          setCurrentProvider(p);
+          setProviderName(selected);
+          setModelName('');
+          saveConfig({ defaultProvider: selected as any });
         }
-      }
-      if (key.escape) {
-        setShowModelSelector(false);
-        setShowProviderSelector(false);
+        setMode('chat');
       }
     }
   });
 
+  const statusRight = [providerName, modelName].filter(Boolean).join('  ·  ');
+
   return (
-    <Box flexDirection="column" padding={1}>
-      <Box marginBottom={1}>
-        <Text color="cyan" bold>Dante Agent</Text>
-        <Text dimColor> (Type /provider, /models, /exit)</Text>
+    <Box flexDirection="column" paddingX={2} paddingTop={1}>
+      <Box justifyContent="space-between" marginBottom={1}>
+        <Text bold>dante</Text>
+        <Text dimColor>{statusRight}</Text>
       </Box>
 
       <Box flexDirection="column" marginBottom={1}>
         {messages.map((m, i) => (
-          <Box key={i} marginBottom={1}>
-            <Text color={m.role === 'user' ? 'green' : 'magenta'} bold>
-              {m.role === 'user' ? '❯ ' : 'Dante: '}
+          <Box key={i} flexDirection="column" marginBottom={1}>
+            <Text color={m.role === 'user' ? 'green' : 'yellow'} bold dimColor>
+              {m.role === 'user' ? 'you' : 'dante'}
             </Text>
-            <Text>{m.content}</Text>
+            <Text wrap="wrap">{m.content}</Text>
           </Box>
         ))}
         {isStreaming && (
           <Box>
-            <Text color="magenta">
-              <Spinner type="dots" /> Thinking...
-            </Text>
+            <Text color="yellow" dimColor><Spinner type="dots" /></Text>
           </Box>
         )}
       </Box>
 
-      {showModelSelector || showProviderSelector ? (
-        <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-          <Text bold>Select {showModelSelector ? 'Model' : 'Provider'}:</Text>
-          {(showModelSelector ? availableModels : availableProviders).map((item, i) => (
-            <Text key={item} color={i === selectedIndex ? 'yellow' : undefined as any}>
-              {i === selectedIndex ? '● ' : '○ '} {item}
-            </Text>
+      {mode !== 'chat' ? (
+        <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1}>
+          <Text dimColor>{mode === 'models' ? 'model' : 'provider'}</Text>
+          {(mode === 'models' ? availableModels : availableProviders).map((item, i) => (
+            <Box key={item}>
+              <Text color={i === selectedIndex ? 'white' : 'gray'} bold={i === selectedIndex}>
+                {i === selectedIndex ? '› ' : '  '}{item}
+              </Text>
+            </Box>
           ))}
-          <Text dimColor>(↑/↓ to navigate, Enter to select, Esc to cancel)</Text>
+          <Text dimColor>  ↑↓  enter  esc</Text>
         </Box>
       ) : (
         <Box flexDirection="column">
-          <Box>
-            <Text color="green" bold>❯ </Text>
-            <TextInput value={input} onChange={setInput} onSubmit={handleSubmit} />
-          </Box>
           {suggestions.length > 0 && (
-            <Box flexDirection="column" marginTop={0} paddingX={1}>
+            <Box flexDirection="column" marginBottom={0} paddingX={2}>
               {suggestions.map((s, i) => (
-                <Text key={s} color={i === selectedIndex ? 'cyan' : 'dim'}>
-                  {i === selectedIndex ? '● ' : '  '} {s}
-                </Text>
+                <Box key={s.name}>
+                  <Text color={i === selectedIndex ? 'white' : 'gray'} bold={i === selectedIndex}>
+                    {i === selectedIndex ? '› ' : '  '}{s.name}
+                  </Text>
+                  <Text dimColor>  {s.desc}</Text>
+                </Box>
               ))}
-              <Text dimColor italic size={1}>  (↑/↓ to navigate, Tab to complete)</Text>
+              <Text dimColor>  tab complete  ↑↓ navigate</Text>
             </Box>
           )}
+          <Box>
+            <Text color="green" dimColor>{'> '}</Text>
+            <TextInput
+              value={input}
+              onChange={setInput}
+              onSubmit={handleSubmit}
+              placeholder="send a message"
+            />
+          </Box>
         </Box>
       )}
     </Box>
