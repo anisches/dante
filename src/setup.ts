@@ -33,14 +33,14 @@ export async function runSetup() {
   if (provider === 'gemini') {
     const key = await p.password({
       message: 'Enter your Gemini API Key:',
-      validate: (value) => (value.length === 0 ? 'Key is required' : undefined),
+      validate: (value) => (!value ? 'Key is required' : undefined),
     });
     if (p.isCancel(key)) process.exit(0);
     updates.geminiKey = key;
   } else if (provider === 'anthropic') {
     const key = await p.password({
       message: 'Enter your Anthropic API Key:',
-      validate: (value) => (value.length === 0 ? 'Key is required' : undefined),
+      validate: (value) => (!value ? 'Key is required' : undefined),
     });
     if (p.isCancel(key)) process.exit(0);
     updates.anthropicKey = key;
