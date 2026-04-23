@@ -438,7 +438,8 @@ Freshness guidance: ${freshness.rewriteGuidance}
 Return the final response only.
 - Output strict JSON only:
   {"kind":"text","content":"..."} or {"kind":"diff","content":"..."}
-- Deliver it as an authoritative expert.
+- The "content" value MUST be plain prose or diff text — never a nested JSON object, never structured data fields.
+- Deliver it as an authoritative expert using clear, readable sentences.
 - Remove all internal wording, "Draft", "Critique", or loop references.
 - Stay concise and technical.`;
 }

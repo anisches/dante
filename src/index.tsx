@@ -104,17 +104,59 @@ function renderDiffSection(section: DiffSection, index: number) {
   );
 }
 
+function renderJsonNode(node: unknown, depth: number): React.ReactElement {
+  if (Array.isArray(node)) {
+    return (
+      <Box flexDirection="column">
+        {node.map((item, i) => (
+          <Box key={i} flexDirection="row">
+            <Text color="yellow">· </Text>
+            <Box flexDirection="column" flexShrink={1}>{renderJsonNode(item, depth)}</Box>
+          </Box>
+        ))}
+      </Box>
+    );
+  }
+  if (typeof node === 'object' && node !== null) {
+    return (
+      <Box flexDirection="column" paddingLeft={depth > 0 ? 1 : 0}>
+        {Object.entries(node as Record<string, unknown>).map(([key, val]) => {
+          const label = key.replace(/_/g, ' ');
+          const isComplex = typeof val === 'object' && val !== null;
+          return (
+            <Box key={key} flexDirection="column" marginBottom={isComplex ? 1 : 0}>
+              <Text bold color={depth === 0 ? 'cyan' : 'white'}>{label}</Text>
+              <Box paddingLeft={2}>{renderJsonNode(val, depth + 1)}</Box>
+            </Box>
+          );
+        })}
+      </Box>
+    );
+  }
+  return <Text wrap="wrap">{String(node ?? '')}</Text>;
+}
+
 function renderAssistantContent(message: ChatMessage) {
-  if (message.kind !== 'diff') {
-    return <Text wrap="wrap">{message.content}</Text>;
+  if (message.kind === 'diff') {
+    const sections = parseDiffSections(message.content);
+    return (
+      <Box flexDirection="column">
+        {sections.map(renderDiffSection)}
+      </Box>
+    );
   }
 
-  const sections = parseDiffSections(message.content);
-  return (
-    <Box flexDirection="column">
-      {sections.map(renderDiffSection)}
-    </Box>
-  );
+  const trimmed = message.content.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const data = JSON.parse(trimmed);
+      return renderJsonNode(data, 0);
+    } catch {
+      // fall through to plain text
+    }
+  }
+
+  return <Text wrap="wrap">{message.content}</Text>;
 }
 
 const App = ({ initialConfig }: { initialConfig: any }) => {
